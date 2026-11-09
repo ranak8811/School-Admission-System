@@ -1,0 +1,71 @@
+# ====================================================================
+# .NET 8 / C# Build Artifacts
+# ====================================================================
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+*.DotSettings.user
+
+# ====================================================================
+# Node.js / React / Vite Frontend
+# ====================================================================
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ====================================================================
+# Secrets, Environment & Local Configuration
+# ====================================================================
+.env
+.env.*
+!.env.example
+appsettings.Development.local.json
+appsettings.Production.local.json
+*.pfx
+*.rsa
+
+# ====================================================================
+# Operating System & IDE
+# ====================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ====================================================================
+# Docker & Local Data Persistence
+# ====================================================================
+postgres_data/
+
+# ====================================================================
+# Internal Specifications & Learning Materials (Do NOT Commit)
+# ====================================================================
+dev-docs/
+explanation/
+reports/
+DEV_DOCS_GENERATOR_FRAMEWORK.md
+*.pdf
+.gemini/
+session.txt
