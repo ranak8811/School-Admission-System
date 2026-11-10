@@ -82,6 +82,13 @@ export const apiClient = {
     return request<ClassItem[]>('/classes');
   },
 
+  async createClass(name: string, totalSeats: number): Promise<{ id: string; name: string; totalSeats: number }> {
+    return request<{ id: string; name: string; totalSeats: number }>('/classes', {
+      method: 'POST',
+      body: JSON.stringify({ name, totalSeats })
+    });
+  },
+
   async getClassById(classId: string): Promise<ClassItem> {
     return request<ClassItem>(`/classes/${encodeURIComponent(classId)}`);
   },

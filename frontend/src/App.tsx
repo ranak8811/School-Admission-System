@@ -1,10 +1,14 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { School } from 'lucide-react';
 import { apiClient } from './services/apiClient';
 import { StudentProvider } from './context/StudentContext';
 import { StudentIdBar } from './components/StudentIdBar';
+import { CatalogPage } from './pages/CatalogPage';
+import { HoldResponse } from './types/api';
 
 const AppContent: React.FC = () => {
+  const [, setActiveHold] = useState<HoldResponse | null>(null);
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
@@ -32,14 +36,7 @@ const AppContent: React.FC = () => {
       <StudentIdBar />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-          <h2 className="text-lg font-semibold text-slate-900 mb-2">
-            Welcome to the Admission Portal
-          </h2>
-          <p className="text-slate-600 text-sm">
-            Enter your 17-digit birth registration number above to begin reserving seats and completing admissions.
-          </p>
-        </div>
+        <CatalogPage onHoldCreated={(hold) => setActiveHold(hold)} />
       </main>
 
       <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-500">
