@@ -1,11 +1,14 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using SchoolAdmission.Api.Configuration;
 using SchoolAdmission.Api.Controllers;
 using SchoolAdmission.Api.Data;
 using SchoolAdmission.Api.DTOs.Holds;
 using SchoolAdmission.Api.Models.Entities;
 using SchoolAdmission.Api.Models.Enums;
+using SchoolAdmission.Api.Services;
 using Xunit;
 
 namespace SchoolAdmission.Tests.Controllers;
@@ -22,9 +25,25 @@ public class HoldsControllerTests
         return new AppDbContext(options);
     }
 
-    private HoldsController CreateController(AppDbContext context)
+    private HoldsController CreateController(AppDbContext context, int holdDurationSeconds = 600)
     {
-        return new HoldsController(context, NullLogger<HoldsController>.Instance);
+        var options = Options.Create(new AdmissionOptions
+        {
+            HoldDurationSeconds = holdDurationSeconds,
+            SweeperIntervalSeconds = 30
+        });
+
+        var allocationService = new SeatAllocationService(
+            context,
+            options,
+            NullLogger<SeatAllocationService>.Instance
+        );
+
+        return new HoldsController(
+            context,
+            allocationService,
+            NullLogger<HoldsController>.Instance
+        );
     }
 
     [Fact]
@@ -180,6 +199,231 @@ public class HoldsControllerTests
 
         var problemDetails = Assert.IsType<ProblemDetails>(notFoundResult.Value);
         Assert.Equal("Not Found", problemDetails.Title);
+        Assert.Contains("does not exist", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task ConfirmHold_WithMatchingStudentId_Returns200OK_AndSetsStatusConfirmed()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_conf1", Name = "Class 6 Morning", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var studentId = "20152691234567890";
+        var hold = new SeatHoldEntity
+        {
+            Id = "h_conf1",
+            ClassId = "c_conf1",
+            StudentId = studentId,
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(9)
+        };
+        context.SeatHolds.Add(hold);
+        await context.SaveChangesAsync();
+
+        // Act
+        var result = await controller.ConfirmHold("h_conf1", studentId, CancellationToken.None);
+
+        // Assert
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        Assert.Equal(200, okResult.StatusCode);
+
+        var response = Assert.IsType<ConfirmHoldResponse>(okResult.Value);
+        Assert.Equal("h_conf1", response.HoldId);
+        Assert.Equal("CONFIRMED", response.Status);
+
+        // Verify entity persisted in DB
+        var savedHold = await context.SeatHolds.FindAsync("h_conf1");
+        Assert.Equal(HoldStatus.CONFIRMED, savedHold!.Status);
+    }
+
+    [Fact]
+    public async Task ConfirmHold_WhenCalledMultipleTimes_IsIdempotent_Returns200OK_WithoutDoubleConfirming()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_conf2", Name = "Class 6 Day", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var studentId = "20152691234567891";
+        var hold = new SeatHoldEntity
+        {
+            Id = "h_conf2",
+            ClassId = "c_conf2",
+            StudentId = studentId,
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(9)
+        };
+        context.SeatHolds.Add(hold);
+        await context.SaveChangesAsync();
+
+        // Act: Call confirmation twice consecutively
+        var firstCall = await controller.ConfirmHold("h_conf2", studentId, CancellationToken.None);
+        var secondCall = await controller.ConfirmHold("h_conf2", studentId, CancellationToken.None);
+
+        // Assert: Both return HTTP 200 OK with CONFIRMED
+        var firstOk = Assert.IsType<OkObjectResult>(firstCall);
+        var secondOk = Assert.IsType<OkObjectResult>(secondCall);
+
+        Assert.Equal(200, firstOk.StatusCode);
+        Assert.Equal(200, secondOk.StatusCode);
+
+        var firstResp = Assert.IsType<ConfirmHoldResponse>(firstOk.Value);
+        var secondResp = Assert.IsType<ConfirmHoldResponse>(secondOk.Value);
+
+        Assert.Equal("CONFIRMED", firstResp.Status);
+        Assert.Equal("CONFIRMED", secondResp.Status);
+
+        // Check total confirmed count is exactly 1
+        var confirmedCount = await context.SeatHolds.CountAsync(h => h.ClassId == "c_conf2" && h.Status == HoldStatus.CONFIRMED);
+        Assert.Equal(1, confirmedCount);
+    }
+
+    [Fact]
+    public async Task ConfirmHold_WhenHoldIsExpired_Returns409Conflict()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_conf3", Name = "Class 7", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var studentId = "20152691234567892";
+        var expiredHold = new SeatHoldEntity
+        {
+            Id = "h_conf_expired",
+            ClassId = "c_conf3",
+            StudentId = studentId,
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(-5) // Expired in past
+        };
+        context.SeatHolds.Add(expiredHold);
+        await context.SaveChangesAsync();
+
+        // Act
+        var result = await controller.ConfirmHold("h_conf_expired", studentId, CancellationToken.None);
+
+        // Assert
+        var conflictResult = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(409, conflictResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(conflictResult.Value);
+        Assert.Equal("Conflict", problemDetails.Title);
+        Assert.Contains("expired or has already been cancelled", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task ConfirmHold_WhenHoldIsCancelled_Returns409Conflict()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_conf4", Name = "Class 8", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var studentId = "20152691234567893";
+        var cancelledHold = new SeatHoldEntity
+        {
+            Id = "h_conf_cancelled",
+            ClassId = "c_conf4",
+            StudentId = studentId,
+            Status = HoldStatus.CANCELLED,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5)
+        };
+        context.SeatHolds.Add(cancelledHold);
+        await context.SaveChangesAsync();
+
+        // Act
+        var result = await controller.ConfirmHold("h_conf_cancelled", studentId, CancellationToken.None);
+
+        // Assert
+        var conflictResult = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(409, conflictResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task ConfirmHold_WhenStudentIdDoesNotMatch_Returns403Forbidden()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_conf5", Name = "Class 9", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var ownerStudentId = "20152691234567894";
+        var imposterStudentId = "20152691234567899";
+
+        var hold = new SeatHoldEntity
+        {
+            Id = "h_conf5",
+            ClassId = "c_conf5",
+            StudentId = ownerStudentId,
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(8)
+        };
+        context.SeatHolds.Add(hold);
+        await context.SaveChangesAsync();
+
+        // Act: Imposter tries to confirm someone else's hold
+        var result = await controller.ConfirmHold("h_conf5", imposterStudentId, CancellationToken.None);
+
+        // Assert
+        var objectResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(403, objectResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(objectResult.Value);
+        Assert.Equal("Forbidden", problemDetails.Title);
+        Assert.Contains("does not match hold record", problemDetails.Detail);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("123456")]
+    [InlineData("2015269123456789")]
+    [InlineData("201526912345678901")]
+    [InlineData("2015269123456789a")]
+    public async Task ConfirmHold_WithMissingOrInvalidStudentIdHeader_Returns400BadRequest(string? studentId)
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        // Act
+        var result = await controller.ConfirmHold("h_any", studentId, CancellationToken.None);
+
+        // Assert
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal(400, badRequestResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(badRequestResult.Value);
+        Assert.Contains("Header X-Student-Id is missing or must be 17 digits", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task ConfirmHold_WhenHoldDoesNotExist_Returns404NotFound()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        // Act
+        var result = await controller.ConfirmHold("h_missing", "20152691234567890", CancellationToken.None);
+
+        // Assert
+        var notFoundResult = Assert.IsType<NotFoundObjectResult>(result);
+        Assert.Equal(404, notFoundResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(notFoundResult.Value);
         Assert.Contains("does not exist", problemDetails.Detail);
     }
 }

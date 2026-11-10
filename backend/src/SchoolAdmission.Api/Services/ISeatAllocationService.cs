@@ -18,6 +18,16 @@ public interface ISeatAllocationService
     Task<SeatHoldResult> CreateHoldAsync(string classId, string studentId, CancellationToken ct = default);
 
     /// <summary>
+    /// Idempotently confirms an unexpired seat hold into permanent CONFIRMED status.
+    /// Protects against race conditions using pessimistic row-locking on seat_holds.
+    /// </summary>
+    /// <param name="holdId">Seat hold identifier.</param>
+    /// <param name="studentId">17-digit student birth certificate identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>ConfirmHoldResult with 200 OK or appropriate domain error.</returns>
+    Task<ConfirmHoldResult> ConfirmHoldAsync(string holdId, string studentId, CancellationToken ct = default);
+
+    /// <summary>
     /// Periodically sweeps and updates stale seat holds whose expires_at timestamp has passed.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
