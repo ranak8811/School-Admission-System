@@ -38,6 +38,9 @@ if (app.Environment.IsDevelopment())
 app.UseAuthorization();
 app.MapControllers();
 
+// Automatically apply database migrations and seed initial data on startup
+await DatabaseSeeder.MigrateAndSeedAsync(app.Services, app.Logger);
+
 app.Run();
 
 // Expose Program class for WebApplicationFactory in integration tests
