@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/studentidbar.tsx","./src/context/studentcontext.tsx","./src/services/apiclient.ts","./src/types/api.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/admincreateclassmodal.tsx","./src/components/classcard.tsx","./src/components/studentidbar.tsx","./src/context/studentcontext.tsx","./src/pages/catalogpage.tsx","./src/services/apiclient.ts","./src/types/api.ts"],"version":"5.9.3"}
