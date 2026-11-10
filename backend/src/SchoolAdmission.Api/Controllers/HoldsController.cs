@@ -1,8 +1,10 @@
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SchoolAdmission.Api.Data;
 using SchoolAdmission.Api.DTOs.Holds;
 using SchoolAdmission.Api.Models.Enums;
+using SchoolAdmission.Api.Services;
 
 namespace SchoolAdmission.Api.Controllers;
 
@@ -10,12 +12,19 @@ namespace SchoolAdmission.Api.Controllers;
 [Route("holds")]
 public class HoldsController : ControllerBase
 {
+    private static readonly Regex StudentIdRegex = new(@"^\d{17}$", RegexOptions.Compiled);
+
     private readonly AppDbContext _dbContext;
+    private readonly ISeatAllocationService _seatAllocationService;
     private readonly ILogger<HoldsController> _logger;
 
-    public HoldsController(AppDbContext dbContext, ILogger<HoldsController> logger)
+    public HoldsController(
+        AppDbContext dbContext,
+        ISeatAllocationService seatAllocationService,
+        ILogger<HoldsController> logger)
     {
         _dbContext = dbContext;
+        _seatAllocationService = seatAllocationService;
         _logger = logger;
     }
 
@@ -60,6 +69,70 @@ public class HoldsController : ControllerBase
             expiresAtUtc
         );
 
+        return Ok(response);
+    }
+
+    /// <summary>
+    /// POST /holds/{holdId}/confirm
+    /// Confirms admission and permanently finalizes seat confirmation.
+    /// Idempotent: repeated calls safely return 200 OK without side effects.
+    /// PRD Endpoint #6.
+    /// </summary>
+    [HttpPost("{holdId}/confirm")]
+    [ProducesResponseType(typeof(ConfirmHoldResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> ConfirmHold(
+        string holdId,
+        [FromHeader(Name = "X-Student-Id")] string? studentId,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(studentId) || !StudentIdRegex.IsMatch(studentId.Trim()))
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Bad Request",
+                Status = StatusCodes.Status400BadRequest,
+                Detail = "Header X-Student-Id is missing or must be 17 digits."
+            });
+        }
+
+        var result = await _seatAllocationService.ConfirmHoldAsync(holdId, studentId.Trim(), ct);
+
+        if (!result.IsSuccess)
+        {
+            return result.StatusCode switch
+            {
+                StatusCodes.Status403Forbidden => StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
+                {
+                    Title = "Forbidden",
+                    Status = StatusCodes.Status403Forbidden,
+                    Detail = result.ErrorMessage
+                }),
+                StatusCodes.Status404NotFound => NotFound(new ProblemDetails
+                {
+                    Title = "Not Found",
+                    Status = StatusCodes.Status404NotFound,
+                    Detail = result.ErrorMessage
+                }),
+                StatusCodes.Status409Conflict => Conflict(new ProblemDetails
+                {
+                    Title = "Conflict",
+                    Status = StatusCodes.Status409Conflict,
+                    Detail = result.ErrorMessage
+                }),
+                _ => StatusCode(result.StatusCode, new ProblemDetails
+                {
+                    Title = "Error",
+                    Status = result.StatusCode,
+                    Detail = result.ErrorMessage
+                })
+            };
+        }
+
+        var response = new ConfirmHoldResponse(result.Hold!.Id, result.Hold!.Status.ToString());
         return Ok(response);
     }
 }

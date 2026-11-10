@@ -128,6 +128,92 @@ public class SeatAllocationService : ISeatAllocationService
     }
 
     /// <inheritdoc />
+    public async Task<ConfirmHoldResult> ConfirmHoldAsync(string holdId, string studentId, CancellationToken ct = default)
+    {
+        var isRelational = _dbContext.Database.IsRelational();
+        await using var tx = isRelational
+            ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
+            : null;
+
+        try
+        {
+            SeatHoldEntity? hold;
+            if (isRelational)
+            {
+                hold = await _dbContext.SeatHolds
+                    .FromSqlInterpolated($"SELECT * FROM seat_holds WHERE id = {holdId} FOR UPDATE")
+                    .SingleOrDefaultAsync(ct);
+            }
+            else
+            {
+                hold = await _dbContext.SeatHolds
+                    .SingleOrDefaultAsync(h => h.Id == holdId, ct);
+            }
+
+            if (hold == null)
+            {
+                if (tx != null) await tx.RollbackAsync(ct);
+                return ConfirmHoldResult.NotFound($"Hold '{holdId}' does not exist.");
+            }
+
+            // Verify ownership: Only the student who created the hold can confirm it
+            if (!string.Equals(hold.StudentId, studentId, StringComparison.Ordinal))
+            {
+                if (tx != null) await tx.RollbackAsync(ct);
+                _logger.LogWarning("Mismatched student ID confirmation attempt. Hold: {HoldId}, Expected: {Expected}, Actual: {Actual}",
+                    holdId, hold.StudentId, studentId);
+                return ConfirmHoldResult.Forbidden("Student ID does not match hold record.");
+            }
+
+            // Strict Idempotency: If already confirmed, return 200 OK without side effects
+            if (hold.Status == HoldStatus.CONFIRMED)
+            {
+                if (tx != null) await tx.CommitAsync(ct);
+                _logger.LogInformation("Hold {HoldId} already confirmed. Idempotently returning success.", holdId);
+                return ConfirmHoldResult.Success(hold);
+            }
+
+            var now = DateTime.UtcNow;
+
+            // Invariant: If hold is cancelled or expired, reject confirmation with 409 Conflict
+            if (hold.Status == HoldStatus.CANCELLED || hold.Status == HoldStatus.EXPIRED || (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt))
+            {
+                // If status in DB is HELD but expired, update status to EXPIRED
+                if (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt)
+                {
+                    hold.Status = HoldStatus.EXPIRED;
+                    hold.UpdatedAt = now;
+                    await _dbContext.SaveChangesAsync(ct);
+                }
+
+                if (tx != null) await tx.CommitAsync(ct);
+                _logger.LogWarning("Confirmation rejected for hold {HoldId}: status is {Status}, expiresAt is {ExpiresAt}",
+                    holdId, hold.Status, hold.ExpiresAt);
+                return ConfirmHoldResult.Conflict("Hold has expired or has already been cancelled.");
+            }
+
+            // State transition: HELD -> CONFIRMED
+            hold.Status = HoldStatus.CONFIRMED;
+            hold.UpdatedAt = now;
+
+            await _dbContext.SaveChangesAsync(ct);
+            if (tx != null) await tx.CommitAsync(ct);
+
+            _logger.LogInformation("Hold {HoldId} successfully confirmed for student {StudentId} in class {ClassId}",
+                hold.Id, hold.StudentId, hold.ClassId);
+
+            return ConfirmHoldResult.Success(hold);
+        }
+        catch (Exception ex)
+        {
+            if (tx != null) await tx.RollbackAsync(ct);
+            _logger.LogError(ex, "Unexpected error occurred while confirming hold {HoldId} for student {StudentId}",
+                holdId, studentId);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<int> SweepExpiredHoldsAsync(CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;
