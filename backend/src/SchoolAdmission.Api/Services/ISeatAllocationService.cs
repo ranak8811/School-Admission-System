@@ -28,6 +28,15 @@ public interface ISeatAllocationService
     Task<ConfirmHoldResult> ConfirmHoldAsync(string holdId, string studentId, CancellationToken ct = default);
 
     /// <summary>
+    /// Cancels an unconfirmed seat hold and releases the reserved seat back to the pool.
+    /// </summary>
+    /// <param name="holdId">Seat hold identifier.</param>
+    /// <param name="studentId">17-digit student birth certificate identifier.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>CancelHoldResult with 204 NoContent or appropriate domain error.</returns>
+    Task<CancelHoldResult> CancelHoldAsync(string holdId, string studentId, CancellationToken ct = default);
+
+    /// <summary>
     /// Periodically sweeps and updates stale seat holds whose expires_at timestamp has passed.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>

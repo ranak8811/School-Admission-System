@@ -135,4 +135,72 @@ public class HoldsController : ControllerBase
         var response = new ConfirmHoldResponse(result.Hold!.Id, result.Hold!.Status.ToString());
         return Ok(response);
     }
+
+    /// <summary>
+    /// DELETE /holds/{holdId}
+    /// Cancels an active unconfirmed seat hold and releases the reserved seat back to the pool.
+    /// PRD Endpoint #7.
+    /// </summary>
+    [HttpDelete("{holdId}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CancelHold(
+        string holdId,
+        [FromHeader(Name = "X-Student-Id")] string? studentId,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(studentId) || !StudentIdRegex.IsMatch(studentId.Trim()))
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Bad Request",
+                Status = StatusCodes.Status400BadRequest,
+                Detail = "Header X-Student-Id is missing or must be 17 digits."
+            });
+        }
+
+        var result = await _seatAllocationService.CancelHoldAsync(holdId, studentId.Trim(), ct);
+
+        if (!result.IsSuccess)
+        {
+            return result.StatusCode switch
+            {
+                StatusCodes.Status400BadRequest => BadRequest(new ProblemDetails
+                {
+                    Title = "Bad Request",
+                    Status = StatusCodes.Status400BadRequest,
+                    Detail = result.ErrorMessage
+                }),
+                StatusCodes.Status403Forbidden => StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
+                {
+                    Title = "Forbidden",
+                    Status = StatusCodes.Status403Forbidden,
+                    Detail = result.ErrorMessage
+                }),
+                StatusCodes.Status404NotFound => NotFound(new ProblemDetails
+                {
+                    Title = "Not Found",
+                    Status = StatusCodes.Status404NotFound,
+                    Detail = result.ErrorMessage
+                }),
+                StatusCodes.Status409Conflict => Conflict(new ProblemDetails
+                {
+                    Title = "Conflict",
+                    Status = StatusCodes.Status409Conflict,
+                    Detail = result.ErrorMessage
+                }),
+                _ => StatusCode(result.StatusCode, new ProblemDetails
+                {
+                    Title = "Error",
+                    Status = result.StatusCode,
+                    Detail = result.ErrorMessage
+                })
+            };
+        }
+
+        return NoContent();
+    }
 }

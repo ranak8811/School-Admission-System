@@ -426,4 +426,182 @@ public class HoldsControllerTests
         var problemDetails = Assert.IsType<ProblemDetails>(notFoundResult.Value);
         Assert.Contains("does not exist", problemDetails.Detail);
     }
+
+    [Fact]
+    public async Task CancelHold_WithMatchingStudentId_Returns204NoContent_AndSetsStatusCancelled()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_canc1", Name = "Class 6 Morning", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var studentId = "20152691234567890";
+        var hold = new SeatHoldEntity
+        {
+            Id = "h_canc1",
+            ClassId = "c_canc1",
+            StudentId = studentId,
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(9)
+        };
+        context.SeatHolds.Add(hold);
+        await context.SaveChangesAsync();
+
+        // Act
+        var result = await controller.CancelHold("h_canc1", studentId, CancellationToken.None);
+
+        // Assert: 204 NoContent with empty body
+        var noContentResult = Assert.IsType<NoContentResult>(result);
+        Assert.Equal(204, noContentResult.StatusCode);
+
+        // Verify entity persisted as CANCELLED in DB
+        var savedHold = await context.SeatHolds.FindAsync("h_canc1");
+        Assert.Equal(HoldStatus.CANCELLED, savedHold!.Status);
+    }
+
+    [Fact]
+    public async Task CancelHold_WhenHoldIsConfirmed_Returns400BadRequest()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_canc2", Name = "Class 6 Day", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var studentId = "20152691234567891";
+        var confirmedHold = new SeatHoldEntity
+        {
+            Id = "h_canc_conf",
+            ClassId = "c_canc2",
+            StudentId = studentId,
+            Status = HoldStatus.CONFIRMED,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(-10)
+        };
+        context.SeatHolds.Add(confirmedHold);
+        await context.SaveChangesAsync();
+
+        // Act
+        var result = await controller.CancelHold("h_canc_conf", studentId, CancellationToken.None);
+
+        // Assert: 400 Bad Request
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal(400, badRequestResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(badRequestResult.Value);
+        Assert.Contains("Cannot cancel a confirmed admission", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task CancelHold_WhenHoldIsExpired_Returns409Conflict()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_canc3", Name = "Class 7", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var studentId = "20152691234567892";
+        var expiredHold = new SeatHoldEntity
+        {
+            Id = "h_canc_exp",
+            ClassId = "c_canc3",
+            StudentId = studentId,
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(-5)
+        };
+        context.SeatHolds.Add(expiredHold);
+        await context.SaveChangesAsync();
+
+        // Act
+        var result = await controller.CancelHold("h_canc_exp", studentId, CancellationToken.None);
+
+        // Assert: 409 Conflict
+        var conflictResult = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(409, conflictResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(conflictResult.Value);
+        Assert.Contains("expired", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task CancelHold_WhenStudentIdDoesNotMatch_Returns403Forbidden()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity { Id = "c_canc4", Name = "Class 8", TotalSeats = 20 };
+        context.Classes.Add(testClass);
+
+        var ownerStudentId = "20152691234567893";
+        var imposterStudentId = "20152691234567899";
+
+        var hold = new SeatHoldEntity
+        {
+            Id = "h_canc4",
+            ClassId = "c_canc4",
+            StudentId = ownerStudentId,
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(9)
+        };
+        context.SeatHolds.Add(hold);
+        await context.SaveChangesAsync();
+
+        // Act
+        var result = await controller.CancelHold("h_canc4", imposterStudentId, CancellationToken.None);
+
+        // Assert: 403 Forbidden
+        var objectResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(403, objectResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(objectResult.Value);
+        Assert.Contains("does not match hold record", problemDetails.Detail);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("123456")]
+    [InlineData("2015269123456789")]
+    [InlineData("201526912345678901")]
+    [InlineData("2015269123456789a")]
+    public async Task CancelHold_WithMissingOrInvalidStudentIdHeader_Returns400BadRequest(string? studentId)
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        // Act
+        var result = await controller.CancelHold("h_any", studentId, CancellationToken.None);
+
+        // Assert
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal(400, badRequestResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(badRequestResult.Value);
+        Assert.Contains("Header X-Student-Id is missing or must be 17 digits", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task CancelHold_WhenHoldDoesNotExist_Returns404NotFound()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        // Act
+        var result = await controller.CancelHold("h_missing", "20152691234567890", CancellationToken.None);
+
+        // Assert
+        var notFoundResult = Assert.IsType<NotFoundObjectResult>(result);
+        Assert.Equal(404, notFoundResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(notFoundResult.Value);
+        Assert.Contains("does not exist", problemDetails.Detail);
+    }
 }
