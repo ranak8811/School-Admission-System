@@ -214,6 +214,94 @@ public class SeatAllocationService : ISeatAllocationService
     }
 
     /// <inheritdoc />
+    public async Task<CancelHoldResult> CancelHoldAsync(string holdId, string studentId, CancellationToken ct = default)
+    {
+        var isRelational = _dbContext.Database.IsRelational();
+        await using var tx = isRelational
+            ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
+            : null;
+
+        try
+        {
+            SeatHoldEntity? hold;
+            if (isRelational)
+            {
+                hold = await _dbContext.SeatHolds
+                    .FromSqlInterpolated($"SELECT * FROM seat_holds WHERE id = {holdId} FOR UPDATE")
+                    .SingleOrDefaultAsync(ct);
+            }
+            else
+            {
+                hold = await _dbContext.SeatHolds
+                    .SingleOrDefaultAsync(h => h.Id == holdId, ct);
+            }
+
+            if (hold == null)
+            {
+                if (tx != null) await tx.RollbackAsync(ct);
+                return CancelHoldResult.NotFound($"Hold '{holdId}' does not exist.");
+            }
+
+            // Verify ownership: Only the student who created the hold can cancel it
+            if (!string.Equals(hold.StudentId, studentId, StringComparison.Ordinal))
+            {
+                if (tx != null) await tx.RollbackAsync(ct);
+                _logger.LogWarning("Mismatched student ID cancellation attempt. Hold: {HoldId}, Expected: {Expected}, Actual: {Actual}",
+                    holdId, hold.StudentId, studentId);
+                return CancelHoldResult.Forbidden("Student ID does not match hold record.");
+            }
+
+            // Invariant: Cannot cancel a confirmed admission
+            if (hold.Status == HoldStatus.CONFIRMED)
+            {
+                if (tx != null) await tx.RollbackAsync(ct);
+                _logger.LogWarning("Cancellation rejected for hold {HoldId}: already CONFIRMED", holdId);
+                return CancelHoldResult.BadRequest("Cannot cancel a confirmed admission.");
+            }
+
+            if (hold.Status == HoldStatus.CANCELLED)
+            {
+                if (tx != null) await tx.RollbackAsync(ct);
+                return CancelHoldResult.Conflict("Hold has already been cancelled.");
+            }
+
+            var now = DateTime.UtcNow;
+
+            // Invariant: If hold expired, reject cancellation
+            if (hold.Status == HoldStatus.EXPIRED || (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt))
+            {
+                if (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt)
+                {
+                    hold.Status = HoldStatus.EXPIRED;
+                    hold.UpdatedAt = now;
+                    await _dbContext.SaveChangesAsync(ct);
+                }
+
+                if (tx != null) await tx.CommitAsync(ct);
+                _logger.LogWarning("Cancellation rejected for hold {HoldId}: expired at {ExpiresAt}", holdId, hold.ExpiresAt);
+                return CancelHoldResult.Conflict("Hold has expired and cannot be cancelled.");
+            }
+
+            // State transition: HELD -> CANCELLED
+            hold.Status = HoldStatus.CANCELLED;
+            hold.UpdatedAt = now;
+
+            await _dbContext.SaveChangesAsync(ct);
+            if (tx != null) await tx.CommitAsync(ct);
+
+            _logger.LogInformation("Hold {HoldId} cancelled by student {StudentId}. Seat released to pool.", holdId, studentId);
+            return CancelHoldResult.Success();
+        }
+        catch (Exception ex)
+        {
+            if (tx != null) await tx.RollbackAsync(ct);
+            _logger.LogError(ex, "Unexpected error occurred while cancelling hold {HoldId} for student {StudentId}",
+                holdId, studentId);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
     public async Task<int> SweepExpiredHoldsAsync(CancellationToken ct = default)
     {
         var now = DateTime.UtcNow;

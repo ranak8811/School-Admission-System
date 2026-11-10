@@ -26,6 +26,11 @@ public class ExpiredHoldSweeperTests
             throw new NotImplementedException();
         }
 
+        public Task<CancelHoldResult> CancelHoldAsync(string holdId, string studentId, CancellationToken ct = default)
+        {
+            throw new NotImplementedException();
+        }
+
         public Task<int> SweepExpiredHoldsAsync(CancellationToken ct = default)
         {
             SweepCalls++;
