@@ -21,14 +21,31 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     });
 });
 
-// 3. Register Controllers and API Explorer for Swagger
+// 3. Configure Admission & Hold Lifecycle Options
+builder.Services.Configure<SchoolAdmission.Api.Configuration.AdmissionOptions>(
+    builder.Configuration.GetSection(SchoolAdmission.Api.Configuration.AdmissionOptions.SectionName));
+
+// Support top-level environment variable HOLD_DURATION_SECONDS override
+if (int.TryParse(builder.Configuration["HOLD_DURATION_SECONDS"], out var holdDurationEnv))
+{
+    builder.Services.PostConfigure<SchoolAdmission.Api.Configuration.AdmissionOptions>(options =>
+    {
+        options.HoldDurationSeconds = holdDurationEnv;
+    });
+}
+
+// 4. Register Domain Services & Background Sweeper Worker
+builder.Services.AddScoped<SchoolAdmission.Api.Services.ISeatAllocationService, SchoolAdmission.Api.Services.SeatAllocationService>();
+builder.Services.AddHostedService<SchoolAdmission.Api.Services.Background.ExpiredHoldSweeper>();
+
+// 5. Register Controllers and API Explorer for Swagger
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-// 4. Configure HTTP Request Pipeline
+// 6. Configure HTTP Request Pipeline
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
