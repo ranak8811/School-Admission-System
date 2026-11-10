@@ -1,8 +1,10 @@
 import React from 'react';
 import { School } from 'lucide-react';
 import { apiClient } from './services/apiClient';
+import { StudentProvider } from './context/StudentContext';
+import { StudentIdBar } from './components/StudentIdBar';
 
-export const App: React.FC = () => {
+const AppContent: React.FC = () => {
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
@@ -26,13 +28,16 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* Persistent Top Student Identity Bar */}
+      <StudentIdBar />
+
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
         <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
           <h2 className="text-lg font-semibold text-slate-900 mb-2">
             Welcome to the Admission Portal
           </h2>
           <p className="text-slate-600 text-sm">
-            Frontend client initialized with React 18, TypeScript, and Tailwind CSS.
+            Enter your 17-digit birth registration number above to begin reserving seats and completing admissions.
           </p>
         </div>
       </main>
@@ -41,6 +46,14 @@ export const App: React.FC = () => {
         &copy; 2026 Onnorokom Projukti Limited - School Admission System
       </footer>
     </div>
+  );
+};
+
+export const App: React.FC = () => {
+  return (
+    <StudentProvider>
+      <AppContent />
+    </StudentProvider>
   );
 };
 
