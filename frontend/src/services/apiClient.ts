@@ -9,6 +9,8 @@ import {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
 
+let activeStudentId: string | null = null;
+
 class ApiClientError extends Error {
   public status: number;
   public details?: ApiError;
@@ -27,6 +29,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   if (!headers.has('Content-Type') && options.body) {
     headers.set('Content-Type', 'application/json');
+  }
+
+  // Automatically attach active student ID if not explicitly specified in headers
+  if (!headers.has('X-Student-Id') && activeStudentId) {
+    headers.set('X-Student-Id', activeStudentId);
   }
 
   const response = await fetch(url, {
@@ -63,6 +70,14 @@ export const apiClient = {
     return API_BASE_URL;
   },
 
+  setStudentId(id: string | null): void {
+    activeStudentId = id && id.trim().length > 0 ? id.trim() : null;
+  },
+
+  getStudentId(): string | null {
+    return activeStudentId;
+  },
+
   async getClasses(): Promise<ClassItem[]> {
     return request<ClassItem[]>('/classes');
   },
@@ -71,11 +86,12 @@ export const apiClient = {
     return request<ClassItem>(`/classes/${encodeURIComponent(classId)}`);
   },
 
-  async createHold(classId: string, studentId: string): Promise<HoldResponse> {
+  async createHold(classId: string, studentId?: string): Promise<HoldResponse> {
+    const id = studentId || activeStudentId || '';
     return request<HoldResponse>(`/classes/${encodeURIComponent(classId)}/holds`, {
       method: 'POST',
       headers: {
-        'X-Student-Id': studentId
+        'X-Student-Id': id
       }
     });
   },
@@ -84,28 +100,31 @@ export const apiClient = {
     return request<HoldStatusResponse>(`/holds/${encodeURIComponent(holdId)}`);
   },
 
-  async confirmHold(holdId: string, studentId: string): Promise<ConfirmHoldResponse> {
+  async confirmHold(holdId: string, studentId?: string): Promise<ConfirmHoldResponse> {
+    const id = studentId || activeStudentId || '';
     return request<ConfirmHoldResponse>(`/holds/${encodeURIComponent(holdId)}/confirm`, {
       method: 'POST',
       headers: {
-        'X-Student-Id': studentId
+        'X-Student-Id': id
       }
     });
   },
 
-  async cancelHold(holdId: string, studentId: string): Promise<void> {
+  async cancelHold(holdId: string, studentId?: string): Promise<void> {
+    const id = studentId || activeStudentId || '';
     return request<void>(`/holds/${encodeURIComponent(holdId)}`, {
       method: 'DELETE',
       headers: {
-        'X-Student-Id': studentId
+        'X-Student-Id': id
       }
     });
   },
 
-  async getMyHolds(studentId: string): Promise<StudentHoldItem[]> {
+  async getMyHolds(studentId?: string): Promise<StudentHoldItem[]> {
+    const id = studentId || activeStudentId || '';
     return request<StudentHoldItem[]>('/me/holds', {
       headers: {
-        'X-Student-Id': studentId
+        'X-Student-Id': id
       }
     });
   }
