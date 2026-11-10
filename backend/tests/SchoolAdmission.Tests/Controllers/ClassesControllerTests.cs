@@ -1,11 +1,15 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using SchoolAdmission.Api.Configuration;
 using SchoolAdmission.Api.Controllers;
 using SchoolAdmission.Api.Data;
 using SchoolAdmission.Api.DTOs.Classes;
+using SchoolAdmission.Api.DTOs.Holds;
 using SchoolAdmission.Api.Models.Entities;
 using SchoolAdmission.Api.Models.Enums;
+using SchoolAdmission.Api.Services;
 using Xunit;
 
 namespace SchoolAdmission.Tests.Controllers;
@@ -16,9 +20,31 @@ public class ClassesControllerTests
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
 
         return new AppDbContext(options);
+    }
+
+    private ClassesController CreateController(AppDbContext context, int holdDurationSeconds = 600)
+    {
+        var options = Options.Create(new AdmissionOptions
+        {
+            HoldDurationSeconds = holdDurationSeconds,
+            SweeperIntervalSeconds = 30
+        });
+
+        var allocationService = new SeatAllocationService(
+            context,
+            options,
+            NullLogger<SeatAllocationService>.Instance
+        );
+
+        return new ClassesController(
+            context,
+            allocationService,
+            NullLogger<ClassesController>.Instance
+        );
     }
 
     [Fact]
@@ -26,7 +52,7 @@ public class ClassesControllerTests
     {
         // Arrange
         using var context = CreateInMemoryDbContext();
-        var controller = new ClassesController(context, NullLogger<ClassesController>.Instance);
+        var controller = CreateController(context);
         var request = new CreateClassRequest("Class 6 - Morning Shift", 120);
 
         // Act
@@ -51,7 +77,7 @@ public class ClassesControllerTests
     {
         // Arrange
         using var context = CreateInMemoryDbContext();
-        var controller = new ClassesController(context, NullLogger<ClassesController>.Instance);
+        var controller = CreateController(context);
         var request = new CreateClassRequest(name, totalSeats);
 
         // Act
@@ -67,7 +93,7 @@ public class ClassesControllerTests
     {
         // Arrange
         using var context = CreateInMemoryDbContext();
-        var controller = new ClassesController(context, NullLogger<ClassesController>.Instance);
+        var controller = CreateController(context);
 
         var testClass = new ClassEntity
         {
@@ -137,7 +163,7 @@ public class ClassesControllerTests
     {
         // Arrange
         using var context = CreateInMemoryDbContext();
-        var controller = new ClassesController(context, NullLogger<ClassesController>.Instance);
+        var controller = CreateController(context);
 
         // Act
         var result = await controller.GetClassById("c_nonexistent", CancellationToken.None);
@@ -145,5 +171,118 @@ public class ClassesControllerTests
         // Assert
         var notFoundResult = Assert.IsType<NotFoundObjectResult>(result);
         Assert.Equal(404, notFoundResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreateHold_WithValid17DigitStudentId_Returns201Created_AndMatchesContract()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context, holdDurationSeconds: 600);
+
+        var testClass = new ClassEntity
+        {
+            Id = "c_hold_test",
+            Name = "Class 6 Morning",
+            TotalSeats = 20
+        };
+        context.Classes.Add(testClass);
+        await context.SaveChangesAsync();
+
+        var studentId = "20152691234567890";
+
+        // Act
+        var result = await controller.CreateHold("c_hold_test", studentId, CancellationToken.None);
+
+        // Assert
+        var objectResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(201, objectResult.StatusCode);
+
+        var response = Assert.IsType<CreateHoldResponse>(objectResult.Value);
+        Assert.StartsWith("h_", response.HoldId);
+        Assert.Equal("c_hold_test", response.ClassId);
+        Assert.Equal(studentId, response.StudentId);
+        Assert.Equal("HELD", response.Status);
+        Assert.True(response.ExpiresAt > DateTime.UtcNow.AddMinutes(9));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("123456")]                    // 6 digits (too short)
+    [InlineData("2015269123456789")]          // 16 digits (1 short)
+    [InlineData("201526912345678901")]        // 18 digits (1 too long)
+    [InlineData("2015269123456789a")]        // Contains alphanumeric letter
+    public async Task CreateHold_WithMissingOrInvalidHeader_Returns400BadRequest(string? studentId)
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        // Act
+        var result = await controller.CreateHold("c_any", studentId, CancellationToken.None);
+
+        // Assert
+        var badRequestResult = Assert.IsType<BadRequestObjectResult>(result);
+        Assert.Equal(400, badRequestResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(badRequestResult.Value);
+        Assert.Contains("Header X-Student-Id is missing or must be 17 digits", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task CreateHold_WhenClassIsSoldOut_Returns409Conflict()
+    {
+        // Arrange: Class with 1 seat, already held
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        var testClass = new ClassEntity
+        {
+            Id = "c_sold_out",
+            Name = "Class Full",
+            TotalSeats = 1
+        };
+        context.Classes.Add(testClass);
+
+        var existingHold = new SeatHoldEntity
+        {
+            Id = "h_full_1",
+            ClassId = "c_sold_out",
+            StudentId = "20152691234567801",
+            Status = HoldStatus.HELD,
+            ExpiresAt = DateTime.UtcNow.AddMinutes(5)
+        };
+        context.SeatHolds.Add(existingHold);
+        await context.SaveChangesAsync();
+
+        // Act: Another student attempts to hold
+        var result = await controller.CreateHold("c_sold_out", "20152691234567802", CancellationToken.None);
+
+        // Assert
+        var conflictResult = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(409, conflictResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(conflictResult.Value);
+        Assert.Contains("No seats available", problemDetails.Detail);
+    }
+
+    [Fact]
+    public async Task CreateHold_WhenClassDoesNotExist_Returns404NotFound()
+    {
+        // Arrange
+        using var context = CreateInMemoryDbContext();
+        var controller = CreateController(context);
+
+        // Act
+        var result = await controller.CreateHold("c_missing_class", "20152691234567899", CancellationToken.None);
+
+        // Assert
+        var notFoundResult = Assert.IsType<NotFoundObjectResult>(result);
+        Assert.Equal(404, notFoundResult.StatusCode);
+
+        var problemDetails = Assert.IsType<ProblemDetails>(notFoundResult.Value);
+        Assert.Contains("does not exist", problemDetails.Detail);
     }
 }

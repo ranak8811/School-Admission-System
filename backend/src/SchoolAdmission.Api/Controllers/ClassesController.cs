@@ -1,22 +1,32 @@
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SchoolAdmission.Api.Data;
 using SchoolAdmission.Api.DTOs.Classes;
+using SchoolAdmission.Api.DTOs.Holds;
 using SchoolAdmission.Api.Models.Entities;
 using SchoolAdmission.Api.Models.Enums;
+using SchoolAdmission.Api.Services;
 
 namespace SchoolAdmission.Api.Controllers;
 
 [ApiController]
 [Route("classes")]
-public class ClassesController : ControllerBase
+public partial class ClassesController : ControllerBase
 {
+    private static readonly Regex StudentIdRegex = new(@"^\d{17}$", RegexOptions.Compiled);
+
     private readonly AppDbContext _dbContext;
+    private readonly ISeatAllocationService _seatAllocationService;
     private readonly ILogger<ClassesController> _logger;
 
-    public ClassesController(AppDbContext dbContext, ILogger<ClassesController> logger)
+    public ClassesController(
+        AppDbContext dbContext,
+        ISeatAllocationService seatAllocationService,
+        ILogger<ClassesController> logger)
     {
         _dbContext = dbContext;
+        _seatAllocationService = seatAllocationService;
         _logger = logger;
     }
 
@@ -138,5 +148,69 @@ public class ClassesController : ControllerBase
         }
 
         return Ok(classDetail);
+    }
+
+    /// <summary>
+    /// POST /classes/{classId}/holds
+    /// Reserves a seat hold for the student identified by the X-Student-Id header.
+    /// PRD Endpoint #4.
+    /// </summary>
+    [HttpPost("{classId}/holds")]
+    [ProducesResponseType(typeof(CreateHoldResponse), StatusCodes.Status201Created)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> CreateHold(
+        string classId,
+        [FromHeader(Name = "X-Student-Id")] string? studentId,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(studentId) || !StudentIdRegex.IsMatch(studentId.Trim()))
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Title = "Bad Request",
+                Status = StatusCodes.Status400BadRequest,
+                Detail = "Header X-Student-Id is missing or must be 17 digits."
+            });
+        }
+
+        var result = await _seatAllocationService.CreateHoldAsync(classId, studentId.Trim(), ct);
+
+        if (!result.IsSuccess)
+        {
+            return result.StatusCode switch
+            {
+                StatusCodes.Status404NotFound => NotFound(new ProblemDetails
+                {
+                    Title = "Not Found",
+                    Status = StatusCodes.Status404NotFound,
+                    Detail = result.ErrorMessage
+                }),
+                StatusCodes.Status409Conflict => Conflict(new ProblemDetails
+                {
+                    Title = "Conflict",
+                    Status = StatusCodes.Status409Conflict,
+                    Detail = result.ErrorMessage
+                }),
+                _ => StatusCode(result.StatusCode, new ProblemDetails
+                {
+                    Title = "Error",
+                    Status = result.StatusCode,
+                    Detail = result.ErrorMessage
+                })
+            };
+        }
+
+        var hold = result.Hold!;
+        var response = new CreateHoldResponse(
+            hold.Id,
+            hold.ClassId,
+            hold.StudentId,
+            hold.Status.ToString(),
+            hold.ExpiresAt
+        );
+
+        return StatusCode(StatusCodes.Status201Created, response);
     }
 }
