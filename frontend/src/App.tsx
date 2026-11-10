@@ -4,10 +4,17 @@ import { apiClient } from './services/apiClient';
 import { StudentProvider } from './context/StudentContext';
 import { StudentIdBar } from './components/StudentIdBar';
 import { CatalogPage } from './pages/CatalogPage';
+import { ActiveHoldModal } from './components/ActiveHoldModal';
 import { HoldResponse } from './types/api';
 
 const AppContent: React.FC = () => {
-  const [, setActiveHold] = useState<HoldResponse | null>(null);
+  const [activeHold, setActiveHold] = useState<HoldResponse | null>(null);
+  const [isHoldModalOpen, setIsHoldModalOpen] = useState(false);
+
+  const handleHoldCreated = (hold: HoldResponse) => {
+    setActiveHold(hold);
+    setIsHoldModalOpen(true);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -36,8 +43,22 @@ const AppContent: React.FC = () => {
       <StudentIdBar />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
-        <CatalogPage onHoldCreated={(hold) => setActiveHold(hold)} />
+        <CatalogPage onHoldCreated={handleHoldCreated} />
       </main>
+
+      {/* Active Hold Countdown & Payment Modal */}
+      <ActiveHoldModal
+        hold={activeHold}
+        isOpen={isHoldModalOpen}
+        onClose={() => setIsHoldModalOpen(false)}
+        onConfirmed={() => {
+          // Keep modal open to show celebratory confirmed state
+        }}
+        onCancelled={() => {
+          setActiveHold(null);
+          setIsHoldModalOpen(false);
+        }}
+      />
 
       <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-500">
         &copy; 2026 Onnorokom Projukti Limited - School Admission System
