@@ -15,9 +15,16 @@ public static class DatabaseSeeder
 
         try
         {
-            logger.LogInformation("Applying pending database migrations...");
-            await dbContext.Database.MigrateAsync();
-            logger.LogInformation("Database migrations applied successfully.");
+            if (dbContext.Database.IsRelational())
+            {
+                logger.LogInformation("Applying pending database migrations...");
+                await dbContext.Database.MigrateAsync();
+                logger.LogInformation("Database migrations applied successfully.");
+            }
+            else
+            {
+                await dbContext.Database.EnsureCreatedAsync();
+            }
 
             // Seed initial classes if the catalog is empty
             if (!await dbContext.Classes.AnyAsync())
