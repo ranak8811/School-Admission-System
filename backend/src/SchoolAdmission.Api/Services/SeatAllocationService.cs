@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -18,6 +19,8 @@ public class SeatAllocationService : ISeatAllocationService
     private readonly AppDbContext _dbContext;
     private readonly AdmissionOptions _options;
     private readonly ILogger<SeatAllocationService> _logger;
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> InMemoryClassLocks = new();
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> InMemoryHoldLocks = new();
 
     public SeatAllocationService(
         AppDbContext dbContext,
@@ -32,8 +35,17 @@ public class SeatAllocationService : ISeatAllocationService
     /// <inheritdoc />
     public async Task<SeatHoldResult> CreateHoldAsync(string classId, string studentId, CancellationToken ct = default)
     {
-        // 1. Begin atomic transaction when using relational database (PostgreSQL)
         var isRelational = _dbContext.Database.IsRelational();
+        SemaphoreSlim? inMemoryLock = null;
+
+        // In-memory provider fallback lock (for unit/integration testing without PostgreSQL instance)
+        if (!isRelational)
+        {
+            inMemoryLock = InMemoryClassLocks.GetOrAdd(classId, _ => new SemaphoreSlim(1, 1));
+            await inMemoryLock.WaitAsync(ct);
+        }
+
+        // 1. Begin atomic transaction when using relational database (PostgreSQL)
         await using var tx = isRelational
             ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
             : null;
@@ -125,12 +137,24 @@ public class SeatAllocationService : ISeatAllocationService
                 studentId, classId);
             throw;
         }
+        finally
+        {
+            inMemoryLock?.Release();
+        }
     }
 
     /// <inheritdoc />
     public async Task<ConfirmHoldResult> ConfirmHoldAsync(string holdId, string studentId, CancellationToken ct = default)
     {
         var isRelational = _dbContext.Database.IsRelational();
+        SemaphoreSlim? inMemoryLock = null;
+
+        if (!isRelational)
+        {
+            inMemoryLock = InMemoryHoldLocks.GetOrAdd(holdId, _ => new SemaphoreSlim(1, 1));
+            await inMemoryLock.WaitAsync(ct);
+        }
+
         await using var tx = isRelational
             ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
             : null;
@@ -211,12 +235,24 @@ public class SeatAllocationService : ISeatAllocationService
                 holdId, studentId);
             throw;
         }
+        finally
+        {
+            inMemoryLock?.Release();
+        }
     }
 
     /// <inheritdoc />
     public async Task<CancelHoldResult> CancelHoldAsync(string holdId, string studentId, CancellationToken ct = default)
     {
         var isRelational = _dbContext.Database.IsRelational();
+        SemaphoreSlim? inMemoryLock = null;
+
+        if (!isRelational)
+        {
+            inMemoryLock = InMemoryHoldLocks.GetOrAdd(holdId, _ => new SemaphoreSlim(1, 1));
+            await inMemoryLock.WaitAsync(ct);
+        }
+
         await using var tx = isRelational
             ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
             : null;
@@ -298,6 +334,10 @@ public class SeatAllocationService : ISeatAllocationService
             _logger.LogError(ex, "Unexpected error occurred while cancelling hold {HoldId} for student {StudentId}",
                 holdId, studentId);
             throw;
+        }
+        finally
+        {
+            inMemoryLock?.Release();
         }
     }
 
