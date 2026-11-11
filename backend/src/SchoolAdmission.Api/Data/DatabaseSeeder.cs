@@ -26,41 +26,91 @@ public static class DatabaseSeeder
                 await dbContext.Database.EnsureCreatedAsync();
             }
 
-            // Seed initial classes if the catalog is empty
-            if (!await dbContext.Classes.AnyAsync())
+            // Seed initial classes or missing catalog offerings (Total 9 offerings for Class 6 to 10 Morning/Day shifts)
+            var defaultClasses = new List<ClassEntity>
             {
-                logger.LogInformation("Seeding initial class catalog...");
-                var initialClasses = new List<ClassEntity>
+                new()
                 {
-                    new()
-                    {
-                        Id = "c_c6m",
-                        Name = "Class 6 - Morning Shift",
-                        TotalSeats = 120,
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow
-                    },
-                    new()
-                    {
-                        Id = "c_c6d",
-                        Name = "Class 6 - Day Shift",
-                        TotalSeats = 100,
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow
-                    },
-                    new()
-                    {
-                        Id = "c_c7m",
-                        Name = "Class 7 - Morning Shift",
-                        TotalSeats = 80,
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow
-                    }
-                };
+                    Id = "c_c6m",
+                    Name = "Class 6 - Morning Shift",
+                    TotalSeats = 120,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c6d",
+                    Name = "Class 6 - Day Shift",
+                    TotalSeats = 100,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c7m",
+                    Name = "Class 7 - Morning Shift",
+                    TotalSeats = 80,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c7d",
+                    Name = "Class 7 - Day Shift",
+                    TotalSeats = 80,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c8m",
+                    Name = "Class 8 - Morning Shift",
+                    TotalSeats = 75,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c8d",
+                    Name = "Class 8 - Day Shift",
+                    TotalSeats = 75,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c9m",
+                    Name = "Class 9 - Morning Shift",
+                    TotalSeats = 60,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c9d",
+                    Name = "Class 9 - Day Shift",
+                    TotalSeats = 60,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                },
+                new()
+                {
+                    Id = "c_c10m",
+                    Name = "Class 10 - Morning Shift",
+                    TotalSeats = 50,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedAt = DateTime.UtcNow
+                }
+            };
 
-                await dbContext.Classes.AddRangeAsync(initialClasses);
+            var existingIds = await dbContext.Classes.Select(c => c.Id).ToListAsync();
+            var missingClasses = defaultClasses.Where(c => !existingIds.Contains(c.Id)).ToList();
+            if (missingClasses.Count > 0)
+            {
+                logger.LogInformation("Seeding {Count} missing class catalog offerings...", missingClasses.Count);
+                await dbContext.Classes.AddRangeAsync(missingClasses);
                 await dbContext.SaveChangesAsync();
-                logger.LogInformation("Initial class catalog seeded with 3 shift offerings.");
+                logger.LogInformation("Class catalog successfully seeded with total standard offerings.");
             }
         }
         catch (Exception ex)
