@@ -59,13 +59,3 @@ Thumbs.db
 # ====================================================================
 postgres_data/
 
-# ====================================================================
-# Internal Specifications & Learning Materials (Do NOT Commit)
-# ====================================================================
-dev-docs/
-explanation/
-reports/
-DEV_DOCS_GENERATOR_FRAMEWORK.md
-*.pdf
-.gemini/
-session.txt
