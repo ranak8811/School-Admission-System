@@ -298,4 +298,33 @@ public class ApiContractIntegrationTests : IClassFixture<CustomWebApplicationFac
         var cancelRes = await _client.SendAsync(cancelMsg);
         Assert.Equal(HttpStatusCode.BadRequest, cancelRes.StatusCode);
     }
+
+    [Fact]
+    public async Task Cors_HeadersPresent_WhenOriginProvided()
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, "/classes");
+        request.Headers.Add("Origin", "http://localhost:3000");
+
+        var response = await _client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Headers.Contains("Access-Control-Allow-Origin"));
+        var allowedOrigin = response.Headers.GetValues("Access-Control-Allow-Origin").FirstOrDefault();
+        Assert.True(allowedOrigin == "*" || allowedOrigin == "http://localhost:3000");
+    }
+
+    [Fact]
+    public async Task Cors_PreflightOptions_ReturnsSuccessWithAllowHeaders()
+    {
+        var request = new HttpRequestMessage(HttpMethod.Options, "/classes/c_test/holds");
+        request.Headers.Add("Origin", "http://localhost:3000");
+        request.Headers.Add("Access-Control-Request-Method", "POST");
+        request.Headers.Add("Access-Control-Request-Headers", "x-student-id,content-type");
+
+        var response = await _client.SendAsync(request);
+
+        Assert.True(response.StatusCode == HttpStatusCode.NoContent || response.StatusCode == HttpStatusCode.OK);
+        Assert.True(response.Headers.Contains("Access-Control-Allow-Origin"));
+        Assert.True(response.Headers.Contains("Access-Control-Allow-Methods"));
+    }
 }

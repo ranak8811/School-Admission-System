@@ -1,4 +1,7 @@
 services:
+  # ==============================================================================
+  # 1. Database Service: PostgreSQL 16 Alpine
+  # ==============================================================================
   db:
     image: postgres:16-alpine
     container_name: school_admission_db
@@ -19,6 +22,49 @@ services:
     networks:
       - school_network
 
+  # ==============================================================================
+  # 2. Backend Service: ASP.NET Core 8 Web API
+  # ==============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: school_admission_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__DefaultConnection: "Host=db;Port=5432;Database=school_admission;Username=postgres;Password=postgres"
+      ASPNETCORE_ENVIRONMENT: "Production"
+      ASPNETCORE_URLS: "http://+:8080"
+      HOLD_DURATION_SECONDS: "600"
+    ports:
+      - "8080:8080"
+    networks:
+      - school_network
+
+  # ==============================================================================
+  # 3. Frontend Service: React 18 + Vite + Nginx Alpine
+  # ==============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: "http://localhost:8080"
+    container_name: school_admission_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    networks:
+      - school_network
+
+# ==============================================================================
+# Persistent Named Volumes & Networks
+# ==============================================================================
 volumes:
   postgres_data:
     name: school_admission_postgres_data
