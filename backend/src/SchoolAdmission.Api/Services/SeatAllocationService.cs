@@ -45,97 +45,104 @@ public class SeatAllocationService : ISeatAllocationService
             await inMemoryLock.WaitAsync(ct);
         }
 
-        // 1. Begin atomic transaction when using relational database (PostgreSQL)
-        await using var tx = isRelational
-            ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
-            : null;
-
         try
         {
-            // 2. Acquire PostgreSQL pessimistic row-level lock on the target class row.
-            // Under concurrent requests, this serializes transactions touching the same class.
-            ClassEntity? targetClass;
-            if (isRelational)
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
             {
-                targetClass = await _dbContext.Classes
-                    .FromSqlInterpolated($"SELECT * FROM classes WHERE id = {classId} FOR UPDATE")
-                    .SingleOrDefaultAsync(ct);
-            }
-            else
-            {
-                // Fallback for in-memory provider unit tests
-                targetClass = await _dbContext.Classes
-                    .SingleOrDefaultAsync(c => c.Id == classId, ct);
-            }
+                // 1. Begin atomic transaction when using relational database (PostgreSQL)
+                await using var tx = isRelational
+                    ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
+                    : null;
 
-            if (targetClass == null)
-            {
-                if (tx != null) await tx.RollbackAsync(ct);
-                return SeatHoldResult.NotFound($"Class '{classId}' does not exist.");
-            }
+                try
+                {
+                    // 2. Acquire PostgreSQL pessimistic row-level lock on the target class row.
+                    // Under concurrent requests, this serializes transactions touching the same class.
+                    ClassEntity? targetClass;
+                    if (isRelational)
+                    {
+                        targetClass = await _dbContext.Classes
+                            .FromSqlInterpolated($"SELECT * FROM classes WHERE id = {classId} FOR UPDATE")
+                            .SingleOrDefaultAsync(ct);
+                    }
+                    else
+                    {
+                        // Fallback for in-memory provider unit tests
+                        targetClass = await _dbContext.Classes
+                            .SingleOrDefaultAsync(c => c.Id == classId, ct);
+                    }
 
-            var now = DateTime.UtcNow;
+                    if (targetClass == null)
+                    {
+                        if (tx != null) await tx.RollbackAsync(ct);
+                        return SeatHoldResult.NotFound($"Class '{classId}' does not exist.");
+                    }
 
-            // 3. Invariant Check: Check if this student already holds or confirmed a seat in this class
-            var alreadyEnrolled = await _dbContext.SeatHolds
-                .AnyAsync(h => h.ClassId == classId &&
-                               h.StudentId == studentId &&
-                               (h.Status == HoldStatus.CONFIRMED ||
-                               (h.Status == HoldStatus.HELD && h.ExpiresAt > now)), ct);
+                    var now = DateTime.UtcNow;
 
-            if (alreadyEnrolled)
-            {
-                if (tx != null) await tx.RollbackAsync(ct);
-                return SeatHoldResult.Conflict("Student already has an active hold or confirmed seat in this class.");
-            }
+                    // 3. Invariant Check: Check if this student already holds or confirmed a seat in this class
+                    var alreadyEnrolled = await _dbContext.SeatHolds
+                        .AnyAsync(h => h.ClassId == classId &&
+                                       h.StudentId == studentId &&
+                                       (h.Status == HoldStatus.CONFIRMED ||
+                                       (h.Status == HoldStatus.HELD && h.ExpiresAt > now)), ct);
 
-            // 4. Capacity Calculation: Count unexpired active holds and confirmed seats
-            var heldCount = await _dbContext.SeatHolds
-                .CountAsync(h => h.ClassId == classId &&
-                                 h.Status == HoldStatus.HELD &&
-                                 h.ExpiresAt > now, ct);
+                    if (alreadyEnrolled)
+                    {
+                        if (tx != null) await tx.RollbackAsync(ct);
+                        return SeatHoldResult.Conflict("Student already has an active hold or confirmed seat in this class.");
+                    }
 
-            var confirmedCount = await _dbContext.SeatHolds
-                .CountAsync(h => h.ClassId == classId &&
-                                 h.Status == HoldStatus.CONFIRMED, ct);
+                    // 4. Capacity Calculation: Count unexpired active holds and confirmed seats
+                    var heldCount = await _dbContext.SeatHolds
+                        .CountAsync(h => h.ClassId == classId &&
+                                         h.Status == HoldStatus.HELD &&
+                                         h.ExpiresAt > now, ct);
 
-            // Invariant: held + confirmed must be strictly less than totalSeats
-            if (heldCount + confirmedCount >= targetClass.TotalSeats)
-            {
-                if (tx != null) await tx.RollbackAsync(ct);
-                _logger.LogWarning("Seat hold rejected for student {StudentId} in class {ClassId}. Class full ({Held} held + {Confirmed} confirmed >= {Total} total)",
-                    studentId, classId, heldCount, confirmedCount, targetClass.TotalSeats);
-                return SeatHoldResult.Conflict("No seats available in this class.");
-            }
+                    var confirmedCount = await _dbContext.SeatHolds
+                        .CountAsync(h => h.ClassId == classId &&
+                                         h.Status == HoldStatus.CONFIRMED, ct);
 
-            // 5. Reserve hold with configured duration
-            var holdDuration = TimeSpan.FromSeconds(_options.HoldDurationSeconds > 0 ? _options.HoldDurationSeconds : 600);
-            var newHold = new SeatHoldEntity
-            {
-                Id = "h_" + Guid.NewGuid().ToString("N")[..8],
-                ClassId = classId,
-                StudentId = studentId,
-                Status = HoldStatus.HELD,
-                ExpiresAt = now.Add(holdDuration),
-                CreatedAt = now,
-                UpdatedAt = now
-            };
+                    // Invariant: held + confirmed must be strictly less than totalSeats
+                    if (heldCount + confirmedCount >= targetClass.TotalSeats)
+                    {
+                        if (tx != null) await tx.RollbackAsync(ct);
+                        _logger.LogWarning("Seat hold rejected for student {StudentId} in class {ClassId}. Class full ({Held} held + {Confirmed} confirmed >= {Total} total)",
+                            studentId, classId, heldCount, confirmedCount, targetClass.TotalSeats);
+                        return SeatHoldResult.Conflict("No seats available in this class.");
+                    }
 
-            _dbContext.SeatHolds.Add(newHold);
-            await _dbContext.SaveChangesAsync(ct);
-            if (tx != null) await tx.CommitAsync(ct);
+                    // 5. Reserve hold with configured duration
+                    var holdDuration = TimeSpan.FromSeconds(_options.HoldDurationSeconds > 0 ? _options.HoldDurationSeconds : 600);
+                    var newHold = new SeatHoldEntity
+                    {
+                        Id = "h_" + Guid.NewGuid().ToString("N")[..8],
+                        ClassId = classId,
+                        StudentId = studentId,
+                        Status = HoldStatus.HELD,
+                        ExpiresAt = now.Add(holdDuration),
+                        CreatedAt = now,
+                        UpdatedAt = now
+                    };
 
-            _logger.LogInformation("Seat hold {HoldId} reserved for student {StudentId} in class {ClassId}. Expires at {ExpiresAt}",
-                newHold.Id, newHold.StudentId, newHold.ClassId, newHold.ExpiresAt);
+                    _dbContext.SeatHolds.Add(newHold);
+                    await _dbContext.SaveChangesAsync(ct);
+                    if (tx != null) await tx.CommitAsync(ct);
 
-            return SeatHoldResult.Success(newHold);
-        }
-        catch (Exception ex)
-        {
-            if (tx != null) await tx.RollbackAsync(ct);
-            _logger.LogError(ex, "Unexpected error occurred while allocating seat for student {StudentId} in class {ClassId}",
-                studentId, classId);
-            throw;
+                    _logger.LogInformation("Seat hold {HoldId} reserved for student {StudentId} in class {ClassId}. Expires at {ExpiresAt}",
+                        newHold.Id, newHold.StudentId, newHold.ClassId, newHold.ExpiresAt);
+
+                    return SeatHoldResult.Success(newHold);
+                }
+                catch (Exception ex)
+                {
+                    if (tx != null) await tx.RollbackAsync(ct);
+                    _logger.LogError(ex, "Unexpected error occurred while allocating seat for student {StudentId} in class {ClassId}",
+                        studentId, classId);
+                    throw;
+                }
+            });
         }
         finally
         {
@@ -155,85 +162,92 @@ public class SeatAllocationService : ISeatAllocationService
             await inMemoryLock.WaitAsync(ct);
         }
 
-        await using var tx = isRelational
-            ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
-            : null;
-
         try
         {
-            SeatHoldEntity? hold;
-            if (isRelational)
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            return await strategy.ExecuteAsync(async () =>
             {
-                hold = await _dbContext.SeatHolds
-                    .FromSqlInterpolated($"SELECT * FROM seat_holds WHERE id = {holdId} FOR UPDATE")
-                    .SingleOrDefaultAsync(ct);
-            }
-            else
-            {
-                hold = await _dbContext.SeatHolds
-                    .SingleOrDefaultAsync(h => h.Id == holdId, ct);
-            }
+                await using var tx = isRelational
+                    ? await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct)
+                    : null;
 
-            if (hold == null)
-            {
-                if (tx != null) await tx.RollbackAsync(ct);
-                return ConfirmHoldResult.NotFound($"Hold '{holdId}' does not exist.");
-            }
-
-            // Verify ownership: Only the student who created the hold can confirm it
-            if (!string.Equals(hold.StudentId, studentId, StringComparison.Ordinal))
-            {
-                if (tx != null) await tx.RollbackAsync(ct);
-                _logger.LogWarning("Mismatched student ID confirmation attempt. Hold: {HoldId}, Expected: {Expected}, Actual: {Actual}",
-                    holdId, hold.StudentId, studentId);
-                return ConfirmHoldResult.Forbidden("Student ID does not match hold record.");
-            }
-
-            // Strict Idempotency: If already confirmed, return 200 OK without side effects
-            if (hold.Status == HoldStatus.CONFIRMED)
-            {
-                if (tx != null) await tx.CommitAsync(ct);
-                _logger.LogInformation("Hold {HoldId} already confirmed. Idempotently returning success.", holdId);
-                return ConfirmHoldResult.Success(hold);
-            }
-
-            var now = DateTime.UtcNow;
-
-            // Invariant: If hold is cancelled or expired, reject confirmation with 409 Conflict
-            if (hold.Status == HoldStatus.CANCELLED || hold.Status == HoldStatus.EXPIRED || (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt))
-            {
-                // If status in DB is HELD but expired, update status to EXPIRED
-                if (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt)
+                try
                 {
-                    hold.Status = HoldStatus.EXPIRED;
+                    SeatHoldEntity? hold;
+                    if (isRelational)
+                    {
+                        hold = await _dbContext.SeatHolds
+                            .FromSqlInterpolated($"SELECT * FROM seat_holds WHERE id = {holdId} FOR UPDATE")
+                            .SingleOrDefaultAsync(ct);
+                    }
+                    else
+                    {
+                        hold = await _dbContext.SeatHolds
+                            .SingleOrDefaultAsync(h => h.Id == holdId, ct);
+                    }
+
+                    if (hold == null)
+                    {
+                        if (tx != null) await tx.RollbackAsync(ct);
+                        return ConfirmHoldResult.NotFound($"Hold '{holdId}' does not exist.");
+                    }
+
+                    // Verify ownership: Only the student who created the hold can confirm it
+                    if (!string.Equals(hold.StudentId, studentId, StringComparison.Ordinal))
+                    {
+                        if (tx != null) await tx.RollbackAsync(ct);
+                        _logger.LogWarning("Mismatched student ID confirmation attempt. Hold: {HoldId}, Expected: {Expected}, Actual: {Actual}",
+                            holdId, hold.StudentId, studentId);
+                        return ConfirmHoldResult.Forbidden("Student ID does not match hold record.");
+                    }
+
+                    // Strict Idempotency: If already confirmed, return 200 OK without side effects
+                    if (hold.Status == HoldStatus.CONFIRMED)
+                    {
+                        if (tx != null) await tx.CommitAsync(ct);
+                        _logger.LogInformation("Hold {HoldId} already confirmed. Idempotently returning success.", holdId);
+                        return ConfirmHoldResult.Success(hold);
+                    }
+
+                    var now = DateTime.UtcNow;
+
+                    // Invariant: If hold is cancelled or expired, reject confirmation with 409 Conflict
+                    if (hold.Status == HoldStatus.CANCELLED || hold.Status == HoldStatus.EXPIRED || (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt))
+                    {
+                        // If status in DB is HELD but expired, update status to EXPIRED
+                        if (hold.Status == HoldStatus.HELD && now > hold.ExpiresAt)
+                        {
+                            hold.Status = HoldStatus.EXPIRED;
+                            hold.UpdatedAt = now;
+                            await _dbContext.SaveChangesAsync(ct);
+                        }
+
+                        if (tx != null) await tx.CommitAsync(ct);
+                        _logger.LogWarning("Confirmation rejected for hold {HoldId}: status is {Status}, expiresAt is {ExpiresAt}",
+                            holdId, hold.Status, hold.ExpiresAt);
+                        return ConfirmHoldResult.Conflict("Hold has expired or has already been cancelled.");
+                    }
+
+                    // State transition: HELD -> CONFIRMED
+                    hold.Status = HoldStatus.CONFIRMED;
                     hold.UpdatedAt = now;
+
                     await _dbContext.SaveChangesAsync(ct);
+                    if (tx != null) await tx.CommitAsync(ct);
+
+                    _logger.LogInformation("Hold {HoldId} successfully confirmed for student {StudentId} in class {ClassId}",
+                        hold.Id, hold.StudentId, hold.ClassId);
+
+                    return ConfirmHoldResult.Success(hold);
                 }
-
-                if (tx != null) await tx.CommitAsync(ct);
-                _logger.LogWarning("Confirmation rejected for hold {HoldId}: status is {Status}, expiresAt is {ExpiresAt}",
-                    holdId, hold.Status, hold.ExpiresAt);
-                return ConfirmHoldResult.Conflict("Hold has expired or has already been cancelled.");
-            }
-
-            // State transition: HELD -> CONFIRMED
-            hold.Status = HoldStatus.CONFIRMED;
-            hold.UpdatedAt = now;
-
-            await _dbContext.SaveChangesAsync(ct);
-            if (tx != null) await tx.CommitAsync(ct);
-
-            _logger.LogInformation("Hold {HoldId} successfully confirmed for student {StudentId} in class {ClassId}",
-                hold.Id, hold.StudentId, hold.ClassId);
-
-            return ConfirmHoldResult.Success(hold);
-        }
-        catch (Exception ex)
-        {
-            if (tx != null) await tx.RollbackAsync(ct);
-            _logger.LogError(ex, "Unexpected error occurred while confirming hold {HoldId} for student {StudentId}",
-                holdId, studentId);
-            throw;
+                catch (Exception ex)
+                {
+                    if (tx != null) await tx.RollbackAsync(ct);
+                    _logger.LogError(ex, "Unexpected error occurred while confirming hold {HoldId} for student {StudentId}",
+                        holdId, studentId);
+                    throw;
+                }
+            });
         }
         finally
         {

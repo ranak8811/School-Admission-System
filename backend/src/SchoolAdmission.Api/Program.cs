@@ -11,14 +11,7 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 // 2. Register Entity Framework Core with PostgreSQL (Npgsql)
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
-    options.UseNpgsql(connectionString, npgsqlOptions =>
-    {
-        // Resilient database retry policy for container cold starts
-        npgsqlOptions.EnableRetryOnFailure(
-            maxRetryCount: 5,
-            maxRetryDelay: TimeSpan.FromSeconds(5),
-            errorCodesToAdd: null);
-    });
+    options.UseNpgsql(connectionString);
 });
 
 // 3. Configure Admission & Hold Lifecycle Options
@@ -38,19 +31,31 @@ if (int.TryParse(builder.Configuration["HOLD_DURATION_SECONDS"], out var holdDur
 builder.Services.AddScoped<SchoolAdmission.Api.Services.ISeatAllocationService, SchoolAdmission.Api.Services.SeatAllocationService>();
 builder.Services.AddHostedService<SchoolAdmission.Api.Services.Background.ExpiredHoldSweeper>();
 
-// 5. Register Controllers and API Explorer for Swagger
+// 5. Register Controllers, CORS, ProblemDetails, and API Explorer for Swagger
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddProblemDetails();
+
+// 6. Configure Cross-Origin Resource Sharing (CORS)
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
 
 var app = builder.Build();
 
-// 6. Configure HTTP Request Pipeline
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+// 7. Configure HTTP Request Pipeline
+app.UseSwagger();
+app.UseSwaggerUI();
+
+app.UseCors();
+app.UseExceptionHandler();
 
 app.UseAuthorization();
 app.MapControllers();
