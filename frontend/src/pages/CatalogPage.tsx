@@ -2,9 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ClassItem, HoldResponse } from '../types/api';
 import { apiClient, ApiClientError } from '../services/apiClient';
 import { useStudent } from '../context/StudentContext';
+import { useNotification } from '../context/NotificationContext';
 import { ClassCard } from '../components/ClassCard';
 import { AdminCreateClassModal } from '../components/AdminCreateClassModal';
-import { RefreshCw, Plus, AlertCircle, CheckCircle2, Layers, Loader2 } from 'lucide-react';
+import { ErrorBanner } from '../components/ErrorBanner';
+import { RefreshCw, Plus, Layers, Loader2 } from 'lucide-react';
 
 interface CatalogPageProps {
   onHoldCreated?: (hold: HoldResponse) => void;
@@ -12,13 +14,13 @@ interface CatalogPageProps {
 
 export const CatalogPage: React.FC<CatalogPageProps> = ({ onHoldCreated }) => {
   const { studentId, isValidStudentId } = useStudent();
+  const { showError, showSuccess } = useNotification();
   const [classes, setClasses] = useState<ClassItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [applyingClassId, setApplyingClassId] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const isMountedRef = useRef(true);
 
@@ -72,23 +74,22 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({ onHoldCreated }) => {
   // Handle seat hold application
   const handleApply = async (classId: string) => {
     if (!isValidStudentId) {
-      setNotification({
-        type: 'error',
-        message: 'Please enter a valid 17-digit student birth registration number above before applying.'
-      });
+      showError(
+        new Error('Please enter a valid 17-digit student birth registration number above before applying.'),
+        'Student ID Required'
+      );
       return;
     }
 
     try {
       setApplyingClassId(classId);
-      setNotification(null);
 
       const hold = await apiClient.createHold(classId, studentId);
 
-      setNotification({
-        type: 'success',
-        message: `Seat hold placed successfully (Hold ID: ${hold.holdId}). Please proceed with fee payment.`
-      });
+      showSuccess(
+        `Seat hold placed successfully (Hold ID: ${hold.holdId.substring(0, 8)}...). Complete fee payment before the timer expires.`,
+        'Seat Reserved / সীট সংরক্ষিত'
+      );
 
       // Refresh catalog immediately to reflect updated held/available counts
       await fetchClasses(true);
@@ -97,17 +98,7 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({ onHoldCreated }) => {
         onHoldCreated(hold);
       }
     } catch (err) {
-      if (err instanceof ApiClientError) {
-        setNotification({
-          type: 'error',
-          message: err.message
-        });
-      } else {
-        setNotification({
-          type: 'error',
-          message: 'An unexpected error occurred while placing seat hold.'
-        });
-      }
+      showError(err, 'Could not reserve seat. It may already be full or reserved by another applicant.');
     } finally {
       setApplyingClassId(null);
     }
@@ -155,46 +146,14 @@ export const CatalogPage: React.FC<CatalogPageProps> = ({ onHoldCreated }) => {
         </div>
       </div>
 
-      {/* Action Notification Banner */}
-      {notification && (
-        <div className={`p-4 rounded-xl border flex items-start justify-between space-x-3 transition-all ${
-          notification.type === 'success'
-            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-            : 'bg-rose-50 border-rose-200 text-rose-900'
-        }`}>
-          <div className="flex items-start space-x-2.5">
-            {notification.type === 'success' ? (
-              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-            ) : (
-              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-            )}
-            <p className="text-sm font-medium">{notification.message}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setNotification(null)}
-            className="text-slate-400 hover:text-slate-600 text-xs font-bold"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-
       {/* Global Error State */}
       {error && (
-        <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-rose-800 text-sm">
-          <div className="flex items-center space-x-2">
-            <AlertCircle className="w-5 h-5 text-rose-600" />
-            <span>{error}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => fetchClasses(false)}
-            className="px-3 py-1 bg-white border border-rose-300 text-rose-700 text-xs rounded-lg font-medium hover:bg-rose-100/50"
-          >
-            Retry
-          </button>
-        </div>
+        <ErrorBanner
+          title="Could not load class catalog"
+          message={error}
+          onRetry={() => fetchClasses(false)}
+          onDismiss={() => setError(null)}
+        />
       )}
 
       {/* Classes Grid */}

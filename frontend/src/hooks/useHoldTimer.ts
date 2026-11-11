@@ -8,8 +8,9 @@ interface UseHoldTimerResult {
   percentRemaining: number;
 }
 
-export function useHoldTimer(expiresAt: string, defaultDurationSeconds = 600): UseHoldTimerResult {
+export function useHoldTimer(expiresAt?: string | null, defaultDurationSeconds = 600): UseHoldTimerResult {
   const calculateRemaining = () => {
+    if (!expiresAt) return 0;
     try {
       const expiryMs = new Date(expiresAt).getTime();
       const nowMs = Date.now();
@@ -23,6 +24,11 @@ export function useHoldTimer(expiresAt: string, defaultDurationSeconds = 600): U
   const [secondsRemaining, setSecondsRemaining] = useState<number>(calculateRemaining);
 
   useEffect(() => {
+    if (!expiresAt) {
+      setSecondsRemaining(0);
+      return;
+    }
+
     // Recalculate immediately whenever expiresAt changes
     setSecondsRemaining(calculateRemaining());
 
